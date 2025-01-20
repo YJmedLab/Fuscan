@@ -11,7 +11,7 @@ git clone https://github.com/YJmedLab/Fuscan.git
 - bedtools >= v2.29
 - seqkit >= v2.9.0
 - java >= 11.0.25
-- singularity >= 3.11.3
+- SnpEff >= 4.3t
 ## Usage
 The most basic usage of Fuscan is as follows:
 ```bash
@@ -36,7 +36,8 @@ ROS1	CCDC6,CD74,CLTC,EZR,GOPC,LRIG3
 ```
 ```bash
 bin/Fuscan -f <REFERENCE_FASTA> -p <PKL> -bg <BACKGORUND_PKL> -fq fusion_pair.txt -ts 1,1,10,10,15,15,20,20 -R1 <R1> -R2 <R2> -o <OUTDIR>
-
+```
+> This tool uses SnpEff for gene annotation. The data and jar package are included in the repository, and the hg19 genome is used by default.
 ## Parameters
 ```txt
 
