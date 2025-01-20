@@ -60,4 +60,4 @@ options:
 ## Results
 **Improper_ratio**: This refers to the proportion of detected fusions among all improper mapped reads. Generally, the proportion of true fusions is relatively high. The default threshold of Fuscan is 0.05.
 
-**Background**：`BIB`: Both breakpoints are in the background; `2R`: Backgrounds that occur more than twice during the construction of the background; `IB`: Only the breakpoint of the reference genome is located in the background library.
+**Background**：`BIB`: Both breakpoints are in the background; `2R`: Backgrounds that occur more than twice during the construction of the background; `IB`: Only the breakpoint from the partner gene is located in the background library.
