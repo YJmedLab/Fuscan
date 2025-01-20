@@ -36,11 +36,7 @@ ROS1	CCDC6,CD74,CLTC,EZR,GOPC,LRIG3
 ```
 ```bash
 bin/Fuscan -f <REFERENCE_FASTA> -p <PKL> -bg <BACKGORUND_PKL> -fq fusion_pair.txt -ts 1,1,10,10,15,15,20,20 -R1 <R1> -R2 <R2> -o <OUTDIR>
-```
-If you find configuring the environment to be troublesome and have `Singularity` installed, you can use the container to run Fuscan directly. The container has ten folders named data0 to data9 for mounting data. 
-```bash
-singularity exec --bind <REFERENCE_FASTA>:/data0 --bind <R1>:/data1 --bind <R2>:/data2 --bind <PKL>:/data3 --bind <OUTDIR>:/data4 singularity/Fuscan.sif Fuscan -f /data0/<REFERENCE_FASTA> -p /data3/<PKL> -R1 /data1/<R1> -R2 /data2/<R2> -o /data4/<OUTDIR>
-```
+
 ## Parameters
 ```txt
 
