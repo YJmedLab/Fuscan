@@ -2,7 +2,6 @@ import argparse
 import os
 import pysam
 import pickle
-import gzip
 import sys
 from multiprocessing import Pool
 from operator import itemgetter
@@ -11,15 +10,18 @@ from loguru import logger
 import time
 
 __author__ = "Zhaoying Liu"
-__version__ = "1.0.0"
-__date__ = "2024-12-01"
+__version__ = "1.2.0"
+__date__ = "2026-04-10"
 __email__ = "liuzhaoying361@126.com"
 
 class breakpoints:
     def __init__(self):
         self.dict = {}
+        self.dir_dict = {}
          
     def bulid_breakpoints(self, split_reads_dict):
+        uniq_set = set()
+        breakpoint_all_chr = {}
         for read_name, read_list in split_reads_dict.items():
             for read_info in read_list:
                 targeted_start = read_info[0]
@@ -30,24 +32,51 @@ class breakpoints:
                 ref_start = read_info[4]
                 ref_end = read_info[5]
                 is_reverse = read_info[6]
+                if (ref_chr, ref_start, ref_end) not in uniq_set:
+                    uniq_set.add((ref_chr, ref_start, ref_end))
+                else:
+                    continue
                 if targeted_cigar_type == [0,4]:
                     targeted_breakpoint = targeted_start
+                    if targeted_breakpoint not in self.dir_dict:
+                        self.dir_dict[targeted_breakpoint] = {"left":1, "right":0}
+                    else:
+                        self.dir_dict[targeted_breakpoint]["left"] += 1
                     if is_reverse:
                         ref_breakpoint = (ref_chr, ref_end)
                     else:
                         ref_breakpoint = (ref_chr, ref_start)
                 elif targeted_cigar_type == [4,0]:
                     targeted_breakpoint = targeted_end
+                    if targeted_breakpoint not in self.dir_dict:
+                        self.dir_dict[targeted_breakpoint] = {"left":0, "right":1}
+                    else:
+                        self.dir_dict[targeted_breakpoint]["right"] += 1
                     if is_reverse:
                         ref_breakpoint = (ref_chr, ref_start)
                     else:
                         ref_breakpoint = (ref_chr, ref_end)          
                 breakpoint_tuple = (targeted_breakpoint, ref_breakpoint)
+                if targeted_breakpoint not in breakpoint_all_chr:
+                    breakpoint_all_chr[targeted_breakpoint] = set()
+                    breakpoint_all_chr[targeted_breakpoint].add(ref_chr)
+                else:
+                    breakpoint_all_chr[targeted_breakpoint].add(ref_chr)
                 if breakpoint_tuple not in self.dict:
                     self.dict[breakpoint_tuple] = [1, {breakpoint_tuple:1}]
                 else:
                     self.dict[breakpoint_tuple][0] += 1
                     self.dict[breakpoint_tuple][1][breakpoint_tuple] += 1
+        filter_breakpoint = set()
+        for key, value in breakpoint_all_chr.items():
+            if len(value) > 3:
+                filter_breakpoint.add(key)
+        del_key_list = []
+        for key in self.dict.keys():
+            if key[0] in filter_breakpoint:
+                del_key_list.append(key)
+        for key in del_key_list:
+            del self.dict[key]
     
     def show_breakpoints(self, count_threshold):
         print("targeted_breakpoint_pos\tref_chrom\tref_breakpoint_pos\tsplit_reads_count\tdiscordant_reads_count")
@@ -72,7 +101,7 @@ class breakpoints:
         targeted_chr = targeted_region.split(':')[0]
         targeted_start = int(targeted_region.split(':')[1].split('-')[0])
         with open(out_file, "w") as f:
-            f.write("targeted_name\ttargeted_chr\ttargeted_breakpoint_pos\tref_chr\tref_breakpoint_pos\tsplit_reads_count\tdiscordant_reads_count\n")
+            f.write("targeted_name\ttargeted_chr\ttargeted_breakpoint_pos\tref_chr\tref_breakpoint_pos\tsplit_reads_count\tdiscordant_reads_count\tdirection\n")
             for key, info in self.dict.items():
                 try:
                     all_count = info[2]['count'] + info[0]
@@ -82,10 +111,21 @@ class breakpoints:
                     continue
                 else:
                     targeted_pos = targeted_start + key[0]
+                    if key[0] in self.dir_dict:
+                        left_count = self.dir_dict[key[0]]["left"]
+                        right_count = self.dir_dict[key[0]]["right"]
+                        if left_count > right_count:
+                            dir = "left"
+                        elif left_count < right_count:
+                            dir = "right"
+                        else:
+                            dir = "unknown"
+                    else:
+                        dir = "unknown"
                     try:
-                        f.write(f"{targeted_name}\t{targeted_chr}\t{targeted_pos}\t{key[1][0]}\t{key[1][1]}\t{info[0]}\t{info[2]['count']}\n")
+                        f.write(f"{targeted_name}\t{targeted_chr}\t{targeted_pos}\t{key[1][0]}\t{key[1][1]}\t{info[0]}\t{info[2]['count']}\t{dir}\n")
                     except:
-                        f.write(f"{targeted_name}\t{targeted_chr}\t{targeted_pos}\t{key[1][0]}\t{key[1][1]}\t{info[0]}\t0\n")
+                        f.write(f"{targeted_name}\t{targeted_chr}\t{targeted_pos}\t{key[1][0]}\t{key[1][1]}\t{info[0]}\t0\t{dir}\n")
 
     def merge_breakpoints(self, merge_len):
         def is_merge(breakpoint_tuple1, breakpoint_tuple2, merge_len):
@@ -154,7 +194,6 @@ class breakpoints:
                     discordant_dict["count"] += count
                     discordant_dict[targeted] = ref
             return is_support, discordant_dict
-
         filtered_count = 0
         del_key_list = []
         for key, info in self.dict.items():
@@ -166,9 +205,6 @@ class breakpoints:
             is_support, discordant_dict = is_support_by_discordant(key, discordant_reads_dict, 100)
             if is_support:
                 self.dict[key].append(discordant_dict)
-            else:
-                filtered_count += 1
-                del_key_list.append(key)
         del_key_list = list(set(del_key_list))
         for key in del_key_list:
             del self.dict[key]
@@ -256,7 +292,7 @@ def split_reads_process(split_reads_reference_bam, targeted_ref_chr, targeted_re
     for read in pysam.AlignmentFile(split_reads_reference_bam, "rb"):
         if read.is_unmapped:
             continue
-        if read.mapq < 30:
+        if read.mapq < 1:
             continue
         is_reverse = read.is_reverse
         targeted_read_name = read.qname.split(';')[0]
@@ -338,6 +374,7 @@ def discordant_reads_process(discordant_reads_reference_bam, targeted_ref_chr, t
  
     discordant_reads_dict = {}
     logger.info(f"[Pid: {os.getpid()}] Processing: Extracting discordant reads...")
+    uniq_set = set()
     for read in pysam.AlignmentFile(discordant_reads_reference_bam, "rb"):
         if read.is_unmapped:
             continue
@@ -348,6 +385,10 @@ def discordant_reads_process(discordant_reads_reference_bam, targeted_ref_chr, t
         ref_chr = read.reference_name
         ref_start = int(read.reference_start)
         ref_end = int(read.reference_end)
+        if (ref_chr, ref_start, ref_end) not in uniq_set:
+            uniq_set.add((ref_chr, ref_start, ref_end))
+        else:
+            continue
         if (ref_chr == targeted_ref_chr) and is_intersect(ref_start, ref_end, targeted_ref_start, targeted_ref_end):
             continue
         if (targeted_start, targeted_end) not in discordant_reads_dict:
@@ -412,8 +453,8 @@ def filter_targeted_bam(out_dir, targeted_name, threads, fasta, homo_list ,targe
                 continue
             if list(out_cigar.keys()) == [4,0]:
                 split_seq = out_seq[0:out_cigar[4]]
-                split_start = read.pos
-                split_end = split_start + out_cigar[4]
+                split_start = read.pos - out_cigar[4]
+                split_end = read.pos
             elif list(out_cigar.keys()) == [0,4]:
                 split_seq = out_seq[out_cigar[0]:]
                 split_start = read.pos + out_cigar[0]
@@ -465,9 +506,8 @@ def targeted_fusion(key):
     logger.info(f"[Pid: {os.getpid()}] Processing: Mapping reads to targeted regions...")
     
     # Align reads to targeted regions
-    os.system(f"bwa mem -t {each_thread} -B 13 -O [18,18] {targeted_fasta} {tmp_R1} {tmp_R2} 2>{os.devnull} | samtools view -buS -F 256 | samtools sort -@ {each_thread} -o {targeted_bam}")
+    os.system(f"bwa mem -k 25 -c 1000 -D 0.9 -m 10 -t {each_thread} -B 13 -O [18,18] {targeted_fasta} {tmp_R1} {tmp_R2} 2>{os.devnull} | samtools view -buS -F 256 | samtools sort -@ {each_thread} -o {targeted_bam}")
     os.system(f"samtools index {targeted_bam}")
-
     # Filtering for targeted.bam
     split_reads_dict, discordant_reads_dict = filter_targeted_bam(args.OUTDIR, targeted_name, each_thread, args.FASTA, Homo_list, targeted_bam)
     
@@ -484,15 +524,26 @@ def targeted_fusion(key):
 
 def write_reads_name(read_name):
     with open(os.path.join(args.OUTDIR,"tmp_reads_name.txt"), "a") as f:
-        f.write(read_name)
+        h = os.popen(f"zcat {args.R1} | head -n 1").readlines()[0].strip()
+        tok = h.split()[0].lstrip("@") if h else ""
+        if "/" in tok:
+            f.write(read_name.strip() + "/1\n")
+            f.write(read_name.strip() + "/2\n")
+        else:    
+            f.write(read_name.strip() + "\n")
 
 def filter_reads(R):
-    each_thread = int(args.THREADS) // 2
+    each_thread = int(args.THREADS) // 3
     reads_name = os.path.join(args.OUTDIR, "tmp_reads_name.txt")
     if R == "R1":
         os.system(f'seqkit grep -f {reads_name} -j {each_thread} {args.R1} > {tmp_R1}')
     elif R == "R2":
         os.system(f'seqkit grep -f {reads_name} -j {each_thread} {args.R2} > {tmp_R2}')
+    elif R == "sort":
+        if not os.path.exists(tmp_ref_bam_sorted):
+            os.system(f'samtools sort -@ {each_thread} {tmp_ref_bam} -o {tmp_ref_bam_sorted}')
+        if not os.path.exists(tmp_ref_bam_sorted + ".bai"):
+            os.system(f'samtools index {tmp_ref_bam_sorted}')
 
 def annotate_fusion(key):
     def getRank(rankList):
@@ -571,7 +622,8 @@ def annotate_fusion(key):
             ref_breakpoint_pos = int(line.split('\t')[4])
             split_reads_count = int(line.split('\t')[5])
             discordant_reads_count = int(line.split('\t')[6])
-            note = f"{split_reads_count},{discordant_reads_count}"
+            dir = line.split('\t')[7]
+            note = f"{split_reads_count},{discordant_reads_count},{dir}"
             out_f.write(f"{targeted_chr}\t{targeted_breakpoint_pos}\t.\t.\t<INV>\t.\t.\tEDC=NA;FREQ=100%;NOTE={note}\n")
             out_f.write(f"{ref_chr}\t{ref_breakpoint_pos}\t.\t.\t<INV>\t.\t.\tEDC=NA;FREQ=100%;NOTE={note}\n")
     snpeff_dir = os.path.join(os.path.dirname(sys.argv[0]),"../snpeff")
@@ -581,7 +633,7 @@ def annotate_fusion(key):
     
     i = 0
     with open(output_file, "w") as f:
-        f.write("targeted_name\ttargeted_chr\ttargeted_breakpoint_pos\ttargeted_gene\ttargeted_rank\tref_chr\tref_breakpoint_pos\tref_gene\tref_rank\tsplit_reads_count\tdiscordant_reads_count\n")
+        f.write("targeted_name\ttargeted_chr\ttargeted_breakpoint_pos\ttargeted_gene\ttargeted_rank\tref_chr\tref_breakpoint_pos\tref_gene\tref_rank\tsplit_reads_count\tdiscordant_reads_count\tdirection\n")
         for vcf in pysam.VariantFile(tmp_anno_vcf, "r"):
             i += 1
             if vcf.info.get("CLOSEST") == None:
@@ -600,8 +652,8 @@ def annotate_fusion(key):
                 ref_breakpoint_pos = vcf.pos
                 if gene1 == gene2:
                     continue
-                split_reads_count, discordant_reads_count = vcf.info.get("NOTE")
-                f.write(f"{targeted_name}\t{targeted_chr}\t{targeted_breakpoint_pos}\t{gene1}\t{rank1}\t{ref_chr}\t{ref_breakpoint_pos}\t{gene2}\t{rank2}\t{split_reads_count}\t{discordant_reads_count}\n")
+                split_reads_count, discordant_reads_count, dir = vcf.info.get("NOTE")
+                f.write(f"{targeted_name}\t{targeted_chr}\t{targeted_breakpoint_pos}\t{gene1}\t{rank1}\t{ref_chr}\t{ref_breakpoint_pos}\t{gene2}\t{rank2}\t{split_reads_count}\t{discordant_reads_count}\t{dir}\n")
     os.remove(tmp_vcf)
     os.remove(tmp_anno_vcf)
 
@@ -612,6 +664,82 @@ def depth_count(bam_file, pos):
             pos += 1
         acgt_depth = bam.count_coverage(ref, pos-1, pos, quality_threshold=0)
     return sum([i[0] for i in acgt_depth])
+
+def dedup_depth_count(bam_file, chr, pos):
+    fragment_set = set()
+    reads_name_set = set()
+    paired_count = 0
+    try:
+        with pysam.AlignmentFile(bam_file, "rb") as bam:
+            for read in bam.fetch(chr, pos-1, pos):
+                if "S" in read.cigarstring or "H" in read.cigarstring:
+                    continue
+                if read.mapq < 30 or abs(read.isize) > 1000 or read.isize == 0:
+                    continue
+                fragment_start = min(read.reference_start, read.next_reference_start)
+                fragment_end = fragment_start + abs(read.isize)
+                fragment_set.add((fragment_start, fragment_end))
+                if read.is_duplicate:
+                    continue
+                if read.qname in reads_name_set:
+                    paired_count += 1
+                else:
+                    reads_name_set.add(read.qname)
+    except Exception as e:
+        print(e)
+    return len(fragment_set) + paired_count
+
+def depth_filter(bam_file, chr, pos, threshold):
+    def get_max_repeat_ratio(seq):
+        if not seq or len(seq) == 0:
+            return 0
+        max_repeat_len = 0
+        for base in ['A', 'T', 'C', 'G']:
+            current_len = 0
+            current_max = 0
+            for nucleotide in seq:
+                if nucleotide == base:
+                    current_len += 1
+                    current_max = max(current_max, current_len)
+                else:
+                    current_len = 0
+            max_repeat_len = max(max_repeat_len, current_max)
+        return max_repeat_len / len(seq)
+    reads_set = set()
+    reads_soft_set = set()
+    sa_dict = {}
+    try:
+        with pysam.AlignmentFile(bam_file, "rb") as bam:
+            for read in bam.fetch(chr, pos-100, pos+100):
+                if read.has_tag("SA"):
+                    if read.seq:
+                        repeat_ratio = get_max_repeat_ratio(read.seq)
+                        if repeat_ratio > 0.3:
+                            continue
+                    reads_set.add((read.reference_start,read.reference_end))
+                    max_soft_len = 0
+                    if read.cigartuples:
+                        for op, length in read.cigartuples:
+                            if op == 4:
+                                max_soft_len = max(max_soft_len, length)
+                    if max_soft_len > 0:
+                        reads_soft_set.add(max_soft_len)
+                    sa_chr = read.get_tag("SA").split(",")[0]
+                    sa_pos = int(read.get_tag("SA").split(",")[1])
+                    if sa_chr not in sa_dict:
+                        sa_dict[sa_chr] = [[sa_pos-1000, sa_pos+1000]]
+                    else:
+                        append_flag = True
+                        for sa_range in sa_dict[sa_chr]:
+                            if sa_pos >= sa_range[0] and sa_pos <= sa_range[1]:
+                                append_flag = False
+                                break
+                        if append_flag:        
+                            sa_dict[sa_chr].append([sa_pos-1000, sa_pos+1000])
+    except:
+        pass
+    is_low_depth = (len(reads_set) < threshold) or (len(reads_soft_set) < threshold)
+    return is_low_depth, sa_dict
 
 def results_summary(out_dir, background_dict, fusion_pair_dict):
     split_interest = int(args.THRESHOLD.split(",")[0])
@@ -624,7 +752,7 @@ def results_summary(out_dir, background_dict, fusion_pair_dict):
     discordant_genenic = int(args.THRESHOLD.split(",")[7])
 
     with open(os.path.join(out_dir, "results_summary.txt"), "w") as f:
-        f.write("Targeted_name\tTargeted_chr\tTargeted_breakpoint_pos\tTargeted_gene\tTargeted_rank\tRef_chr\tRef_breakpoint_pos\tRef_gene\tRef_rank\tSplit_reads_count\tDiscordant_reads_count\t\tImproper_ratio\tBackground\n")
+        f.write("Targeted_name\tTargeted_chr\tTargeted_breakpoint_pos\tTargeted_gene\tTargeted_rank\tRef_chr\tRef_breakpoint_pos\tRef_gene\tRef_rank\tSplit_reads_count\tDiscordant_reads_count\tDirection\tImproper_ratio\tBackground\n")
         for line in os.popen(f"cat {out_dir}/*.breakpoints.annotated.results.txt | sort -k6,6nr").read().split("\n"):
             if line.startswith('targeted_name'):
                 continue
@@ -659,6 +787,8 @@ def results_summary(out_dir, background_dict, fusion_pair_dict):
                     if split_reads_count < split_interest or discordant_reads_count < discordant_interest:
                         continue
                 else:
+                    if discordant_reads_count == 0:
+                        continue
                     if "Intron" in ref_rank:
                         if split_reads_count < split_intron or discordant_reads_count < discordant_intron:
                             continue
@@ -675,8 +805,24 @@ def results_summary(out_dir, background_dict, fusion_pair_dict):
             except:
                 improper_ratio = 0
             line += f"\t{improper_ratio}"
-            if improper_ratio < 0.05:
-                continue
+            # Judge SA depth of breakpoint
+            is_low_depth_1, sa_dict_1 = depth_filter(tmp_ref_bam_sorted, targeted_chr, targeted_breakpoint_pos, 3)
+            is_low_depth_2, sa_dict_2 = depth_filter(tmp_ref_bam_sorted, ref_chr, ref_breakpoint_pos, 3)
+            is_low_depth = is_low_depth_1 or is_low_depth_2
+            # Judge SA support of breakpoint
+            is_in_sa1 = False
+            is_in_sa2 = False
+            if ref_chr in sa_dict_1:
+                for sa_range in sa_dict_1[ref_chr]:
+                    if ref_breakpoint_pos >= sa_range[0] and ref_breakpoint_pos <= sa_range[1]:
+                        is_in_sa1 = True
+                        break
+            if targeted_chr in sa_dict_2:
+                for sa_range in sa_dict_2[targeted_chr]:
+                    if targeted_breakpoint_pos >= sa_range[0] and targeted_breakpoint_pos <= sa_range[1]:
+                        is_in_sa2 = True
+                        break
+            is_in_sa = is_in_sa1 and is_in_sa2
             if background_dict == None:
                 f.write(line + "\tPASS\n")
                 continue
@@ -687,24 +833,100 @@ def results_summary(out_dir, background_dict, fusion_pair_dict):
                     f.write(line + "\tBIB\n")
                 else:
                     f.write(line + "\tIB\n")
+            elif ((targeted_chr, targeted_breakpoint_pos) in black_pos_set) or ((ref_chr, ref_breakpoint_pos) in black_pos_set):
+                f.write(line + "\tBLACK\n")
+            elif is_low_depth:
+                f.write(line + "\tLOW_DEPTH\n")
+            elif not is_in_sa:
+                f.write(line + "\tNO_SA\n")
             else:
-                f.write(line + "\tPASS\n")
-            
+                f.write(line + f"\tPASS\n")
+    unique_dict = {}
+    transcript_dict = {}
+    with open(args.TRANSCRIPT_DIR, "r") as f:
+        for line in f.readlines():
+            line = line.strip()
+            transcript_dict[line.split()[0]] = line.split()[1]
+    with open(os.path.join(out_dir, "results_summary.txt"), "r") as f, open(os.path.join(out_dir, "results_summary.filtered.txt"), "w") as f1:
+        f1.write("Fusion\tAF\tGene1_chr\tGene1_pos\tGene1\tGene1_rank\tGene2_chr\tGene2_pos\tGene2\tGene2_rank\tSplit_reads_count\tDiscordant_reads_count\tImproper_ratio\tBackground\tDirection\n")
+        for line in f.readlines():
+            if line.startswith('Targeted_name'):
+                continue
+            if line == '':
+                continue
+            line = line.strip()
+            targeted_chr = line.split('\t')[1]
+            targeted_breakpoint_pos = int(line.split('\t')[2])
+            targeted_gene = line.split('\t')[3]
+            targeted_rank = line.split('\t')[4]
+            ref_chr = line.split('\t')[5]
+            ref_breakpoint_pos = int(line.split('\t')[6])
+            ref_gene = line.split('\t')[7]
+            ref_rank = line.split('\t')[8]
+            split = int(line.split('\t')[9])
+            discordant = int(line.split('\t')[10])
+            direction = line.split('\t')[11]
+            imporper_ratio = float(line.split('\t')[12])
+            background = line.split('\t')[13]
+            normal_depth = max(dedup_depth_count(tmp_ref_bam_sorted, targeted_chr, targeted_breakpoint_pos), dedup_depth_count(tmp_ref_bam_sorted, ref_chr, ref_breakpoint_pos))
+            af = (split + discordant) / (normal_depth + split + discordant)
+            af = round(af, 4)
+            if imporper_ratio < 0.0001:
+                continue
+            if background != "PASS":
+                continue
+            if split == 1 and discordant < 5:
+                continue
+            if targeted_gene in transcript_dict:
+                if transcript_dict[targeted_gene] == "5>3":
+                    if direction == "left":
+                        fusion = f"{targeted_gene}({targeted_rank})-{ref_gene}({ref_rank})"
+                        line = "\t".join([fusion,str(af),targeted_chr,str(targeted_breakpoint_pos),targeted_gene,targeted_rank,ref_chr,str(ref_breakpoint_pos),ref_gene,ref_rank,str(split),str(discordant),str(imporper_ratio),background,"left"])
+                    elif direction == "right":
+                        fusion = f"{ref_gene}({ref_rank})-{targeted_gene}({targeted_rank})"
+                        line = "\t".join([fusion,str(af),ref_chr,str(ref_breakpoint_pos),ref_gene,ref_rank,targeted_chr,str(targeted_breakpoint_pos),targeted_gene,targeted_rank,str(split),str(discordant),str(imporper_ratio),background,"right"])
+                    else:
+                        fusion = f"{targeted_gene}({targeted_rank})-{ref_gene}({ref_rank})"
+                        line = "\t".join([fusion,str(af),targeted_chr,str(targeted_breakpoint_pos),targeted_gene,targeted_rank,ref_chr,str(ref_breakpoint_pos),ref_gene,ref_rank,str(split),str(discordant),str(imporper_ratio),background,"direction_unknown"])
+                elif transcript_dict[targeted_gene] == "3>5":
+                    if direction == "left":
+                        fusion = f"{ref_gene}({ref_rank})-{targeted_gene}({targeted_rank})"
+                        line = "\t".join([fusion,str(af),ref_chr,str(ref_breakpoint_pos),ref_gene,ref_rank,targeted_chr,str(targeted_breakpoint_pos),targeted_gene,targeted_rank,str(split),str(discordant),str(imporper_ratio),background,"left"])
+                    elif direction == "right":
+                        fusion = f"{targeted_gene}({targeted_rank})-{ref_gene}({ref_rank})"
+                        line = "\t".join([fusion,str(af),targeted_chr,str(targeted_breakpoint_pos),targeted_gene,targeted_rank,ref_chr,str(ref_breakpoint_pos),ref_gene,ref_rank,str(split),str(discordant),str(imporper_ratio),background,"right"])
+                    else:
+                        fusion = f"{ref_gene}({ref_rank})-{targeted_gene}({targeted_rank})"
+                        line = "\t".join([fusion,str(af),ref_chr,str(ref_breakpoint_pos),ref_gene,ref_rank,targeted_chr,str(targeted_breakpoint_pos),targeted_gene,targeted_rank,str(split),str(discordant),str(imporper_ratio),background,"direction_unknown"])
+            line = line.strip() + "\n"
+            if (fusion) not in unique_dict:
+                unique_dict[(fusion)] = [[],[]]
+                unique_dict[(fusion)][0].append(line)
+                unique_dict[(fusion)][1].append(imporper_ratio)
+            else:
+                unique_dict[(fusion)][0].append(line)
+                unique_dict[(fusion)][1].append(imporper_ratio)
+        for key, value in unique_dict.items():
+            f1.write(value[0][value[1].index(max(value[1]))])
+
 # Run main
 if __name__ == '__main__':
     start_time = time.time()
     def usage(name=None):                                                            
         return 'Fuscan -f <FASTA> -b <BED> -R1 <R1> -R2 <R2> -o <OUTDIR>'
     # Parser command line arguments
-    parser = argparse.ArgumentParser(description='An ultra-sensitive and noise-free fusion detector for genomic breakpoints discovery in DNA sequencing data.', usage=usage())
+    parser = argparse.ArgumentParser(description='A robust DNA fusion caller for targeted sequencing data in cancer diagnostics.', usage=usage())
     parser.add_argument('-f','--FASTA', type=str, metavar="", required=True, default='', help='FASTA file of reference sequence')
     parser.add_argument('-b','--BED', type=str, metavar="", required=False, default='', help='BED file of targeted regions of interested genes')
     parser.add_argument('-p','--PKL', type=str, metavar="", required=False, default='', help='PKL file generated from Fuscan_pre')
     parser.add_argument('-R1', type=str, metavar="", required=True, default='', help='FASTQ or FASTQ.gz file of R1 reads')
     parser.add_argument('-R2', type=str, metavar="", required=True, default='', help='FASTQ or FASTQ.gz file of R2 reads')
+    parser.add_argument('-bam','--BAM', type=str, metavar="", required=False, default='', help='BAM file of R1 and R2 reads')
     parser.add_argument('-o','--OUTDIR', metavar="", type=str, default=os.getcwd(), help='Output directory for results [default: current directory]')
     parser.add_argument('-bg','--BG', metavar="", type=str, default=None, help='Background PKL file generated from Fuscan_bg [default: None]')
+    parser.add_argument('-bp','--BLACK_POS', metavar="", type=str, default=None, help='Blacklisted positions to exclude [default: None]')
     parser.add_argument('-fp','--FUSION_PAIR', metavar="", type=str, default=None, help='Tab-separated file of interested fusion pairs [default: None]')
+    parser.add_argument('-td','--TRANSCRIPT_DIR',  metavar="", type=str, default=None, help='Transcription direction of interested genes [default: None]')
     parser.add_argument('-ts','--THRESHOLD', metavar="", type=str, default='1,1,10,10,15,15,20,20', help='Threshhold of split reads and discordant reads count for interested fusion pairs, intron, exon and intergenic region [default: 1,1,10,10,15,15,20,20]')
     parser.add_argument('-t','--THREADS', metavar="", type=str, default='1', help='Number of threads to use [default: 1]')
     parser.add_argument('-v','--version', action='version', version="Fuscan version: " + __version__)
@@ -716,6 +938,11 @@ if __name__ == '__main__':
     if not os.path.exists(args.OUTDIR):
         os.makedirs(args.OUTDIR)
     
+    # Detected running mode
+    is_fq = True
+    if args.BAM != '':
+        is_fq = False
+
     # Load homologous region list
     if args.PKL == '':
         if args.BED == '':
@@ -727,11 +954,25 @@ if __name__ == '__main__':
         with open(args.PKL, "rb") as f:
             Homo_dict = pickle.load(f)
     
+    # Load blacklisted positions
+    if args.BLACK_POS == None:
+        black_pos_set = set()
+    else:
+        black_pos_set = set()
+        with open(args.BLACK_POS, "r") as f:
+            for line in f:
+                chrom = line.strip().split("\t")[0]
+                pos = line.strip().split("\t")[1]
+                black_pos_set.add((chrom, int(pos)))
+
     # Filter reference sequence
     logger.info("Processing: Mapping reads to reference sequence...")
     tmp_ref_bam = os.path.join(args.OUTDIR, "tmp.ref.bam")
-    os.system(f"bwa mem -t {args.THREADS} -L [60,60] {args.FASTA} {args.R1} {args.R2} 2>>{os.path.join(args.OUTDIR, "processing.log")} | samtools sort - -@ {args.THREADS} -n -o {tmp_ref_bam}")
-
+    tmp_ref_bam_sorted = os.path.join(args.OUTDIR, "tmp.ref.sorted.bam")
+    if is_fq:
+        os.system(f"bwa mem -t {args.THREADS} {args.FASTA} {args.R1} {args.R2} 2>>{os.path.join(args.OUTDIR, "processing.log")} | samtools sort - -@ {args.THREADS} -n -o {tmp_ref_bam}")
+    else:
+        os.system(f"samtools sort -@ {args.THREADS} -n {args.BAM} -o {tmp_ref_bam}")
     logger.info("Processing: Mapping reads finished.")
     logger.info("Processing: Selecting improper reads...")
     save_set = set()
@@ -742,30 +983,35 @@ if __name__ == '__main__':
             if read.qname in save_set:
                 last_read_chr = read.reference_name
                 last_read_name = read.qname
-                continue 
-            if abs(read.isize) > 1000 or read.mapq < 30 or (read.qname == last_read_name and read.reference_name != last_read_chr and last_read_name != ""):
+                continue
+            if read.is_unmapped:
+                continue
+            is_softclip = False
+            if "S" in read.cigarstring or "H" in read.cigarstring:
+                cigar_count, cigar_len, S_list = cigar_count_len(read.cigarstring)
+                if cigar_len['S'] > 10:
+                    is_softclip = True
+                elif cigar_len['H'] > 10:
+                    is_softclip = True
+            if abs(read.isize) > 1000 or is_softclip or (read.qname == last_read_name and read.reference_name != last_read_chr and last_read_name != ""):
                 save_set.add(read.qname + "\n")
             last_read_chr = read.reference_name
             last_read_name = read.qname
-    os.remove(tmp_ref_bam)
     logger.info("Processing: Writing improper reads to file...")
-    tmp_R1 = os.path.join(args.OUTDIR, "tmp.R1.fq.gz")
-    tmp_R2 = os.path.join(args.OUTDIR, "tmp.R2.fq.gz")
+    tmp_R1 = os.path.join(args.OUTDIR, "tmp.R1.fq")
+    tmp_R2 = os.path.join(args.OUTDIR, "tmp.R2.fq")
 
     # Run targeted fusion detection
     each_thread = int(args.THREADS) // len(Homo_dict.keys())
     pool = Pool(int(args.THREADS))
     pool.map(write_reads_name, save_set)
-    pool.map(filter_reads, ["R1", "R2"])
+    pool.map(filter_reads, ["R1", "R2", "sort"])
     logger.info("Processing: Running targeted fusion detection...")
     pool.map(targeted_fusion, Homo_dict.keys())
     logger.info("Processing: Annotating fusion results...")
     pool.map(annotate_fusion, Homo_dict.keys())
     pool.close()
     pool.join()
-    os.remove(os.path.join(args.OUTDIR,"tmp_reads_name.txt"))
-    os.remove(tmp_R1)
-    os.remove(tmp_R2)
     
     # Load background_dict
     if args.BG == None:
@@ -773,7 +1019,7 @@ if __name__ == '__main__':
     else:
         with open(args.BG, "rb") as f:
             background_dict = pickle.load(f)
-    
+
     # Load fusion_pair_dict
     if args.FUSION_PAIR == None:
         fusion_pair_dict = None
@@ -786,10 +1032,15 @@ if __name__ == '__main__':
                 for pair in line[1].split(","):
                     pair_set.add(pair)
                 fusion_pair_dict[line[0]] = pair_set
-        
+
     # Generate results summary
     logger.info("Processing: Generating results summary...")
     results_summary(args.OUTDIR, background_dict, fusion_pair_dict)
     end_time = time.time()
     round_time = round(end_time - start_time, 2)
     logger.info(f"Elapsed time: {round_time} seconds.")
+    os.remove(tmp_ref_bam)
+    os.remove(tmp_ref_bam_sorted)
+    os.remove(tmp_ref_bam_sorted + ".bai")
+    os.remove(tmp_R1)
+    os.remove(tmp_R2)
