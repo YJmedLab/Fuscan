@@ -80,3 +80,9 @@ options:
 **Background**：`BIB`: Both breakpoints are in the background; `2R`: Backgrounds that occur more than twice during the construction of the background; `IB`: Only the breakpoint from the partner gene is located in the background library.
 
 **Other flags in the summary**: `BLACK` indicates a breakpoint overlapping a position from `-bp`; `LOW_DEPTH` and `NO_SA` reflect optional depth and supplementary-alignment filters applied when a background library is provided.
+
+## Citation
+
+If you use Fuscan in your research, please cite:
+
+> Liu Z, Wang S, Chen S, Feng H, Hu X, Zhou P, Shi D. Fuscan: a robust DNA fusion caller for targeted sequencing data in cancer diagnostics. *Bioinformatics Advances*. 2026;6(1):vbag152. doi: [10.1093/bioadv/vbag152](https://doi.org/10.1093/bioadv/vbag152)
